@@ -1001,7 +1001,7 @@ namespace Jackett.Common.Indexers.Definitions
             // Singular NOUN-first "серія N з M"/"серію N з M" = the single Nth episode (of M) -> EN (an index, not a
             // count). Only the singular я/ю noun forms; the genitive/plural "серій/серії" is a count handled below.
             private static readonly Regex _episodeSingleIndexOfRegex = new Regex(
-                @"\bсері[яю]\b\s*[:]*\s*(\d{1,3})\s*(?:з|із|of)\s+\d{1,3}\b",
+                @"\bсері[яю]\b\s*[:]*\s*(\d{1,3})\s*(?:з|із|of)\s+(?:\d{1,3}\b|[XxХх]{2,}|\?{2,})",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase);
             // Number-first episode COUNT with no "of" total ("13 серій", "26 епізодів", "10 випусків") -> E01-N. The
             // lookbehind avoids the tail of a range ("1-4 серії" -> the "4 серії" must NOT match), and the lookahead

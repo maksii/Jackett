@@ -561,6 +561,8 @@ namespace Jackett.Test.Common.Indexers.Toloka
                 yield return new TestCaseData("Моє переродження в Слиз (Сезон 4, серії 11 з ХХ) / Tensei shitara Slime Datta Ken (Season 4) (2026) WEBDLRip 1080p H.265 Ukr/Jap | sub Ukr", new List<int> { TorznabCatType.TVAnime.ID }, true).Returns("Tensei shitara Slime Datta Ken S04E01-E11 (2026) WEBRip 1080p x265 Ukrainian");
                 // "Сезон 4, 1-11 з ???" = season 4, episodes 1-11 of unknown total -> S04E01-E11, NOT a season-list S01-S11.
                 yield return new TestCaseData("Про моє переродження в слиз (Сезон 4, 1-11 з ???) / Tensei shitara Slime Datta Ken (Season 4) (2026) WEBDLRip 1080p H.264", new List<int> { TorznabCatType.TVAnime.ID }, true).Returns("Tensei shitara Slime Datta Ken S04E01-E11 (2026) WEBRip 1080p x264");
+                // SINGULAR "серія N з ХХ" (unknown total) stays the single Nth episode -> EN (an index, not the count above).
+                yield return new TestCaseData("Нянпір / Nyanpire The Animation (серія 5 з ХХ) (2011) HDTVRip Ukr/Jap | Sub Ukr", new List<int> { TorznabCatType.TVAnime.ID }, true).Returns("Nyanpire The Animation E05 (2011) HDTV Ukrainian");
             }
         }
     }
