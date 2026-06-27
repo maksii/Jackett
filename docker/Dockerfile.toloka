@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+#
+# Toloka-enhanced Jackett — overlay image.
+#
+# Compiles Jackett.Common.dll (which contains the enhanced Toloka indexer +
+# TitleParser) from THIS branch, then drops that single managed assembly onto the
+# official LinuxServer.io Jackett image. The result is byte-identical to upstream
+# Jackett except for the Toloka indexer — same config dir, ports, s6 init, etc.
+#
+# Why this works: Jackett.Common.dll is platform-agnostic IL, so it runs fine on
+# the musl/Alpine LSIO base. BASE_TAG is pinned to the exact upstream version this
+# branch is based on (v0.24.2125), so the swapped DLL is ABI-compatible with every
+# sibling assembly already in the image.
+#
+# Build (context = repo root):
+#   docker build -f docker/Dockerfile.toloka -t jackett-toloka .
+#
+# When you rebase onto a newer upstream Jackett, bump BASE_TAG to the matching
+# LinuxServer tag (https://hub.docker.com/r/linuxserver/jackett/tags).
+ARG BASE_TAG=0.24.2125
+
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
+COPY . .
+# Build only the changed assembly. -f net9.0 skips the net471/Mono TFM (Windows-only).
+RUN dotnet build src/Jackett.Common/Jackett.Common.csproj \
+        -c Release \
+        -f net9.0 \
+        -p:TreatWarningsAsErrors=false \
+        -o /out
+
+FROM lscr.io/linuxserver/jackett:${BASE_TAG}
+LABEL org.opencontainers.image.title="Jackett (Toloka-enhanced)" \
+      org.opencontainers.image.description="LinuxServer Jackett with the enhanced Toloka.to indexer" \
+      org.opencontainers.image.source="https://github.com/maksii/Jackett"
+COPY --from=build /out/Jackett.Common.dll /app/Jackett/Jackett.Common.dll

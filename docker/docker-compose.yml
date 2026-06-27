@@ -1,0 +1,27 @@
+# Toloka-enhanced Jackett — local test / sharing.
+#
+# Pull the CI-published image and run it just like the official LinuxServer image.
+# Config persists in ./config (Jackett ServerConfig.json, indexer settings, etc.).
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#   # open http://localhost:9117 → add the "Toloka" indexer
+#
+# To build & run locally instead of pulling, comment out `image:` and uncomment
+# the `build:` block below.
+services:
+  jackett-toloka:
+    image: ghcr.io/maksii/jackett-toloka:latest
+    # build:
+    #   context: ..
+    #   dockerfile: docker/Dockerfile.toloka
+    container_name: jackett-toloka
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      # - AUTO_UPDATE=true   # leave OFF: LSIO auto-update would overwrite the Toloka DLL
+    volumes:
+      - ./config:/config
+    ports:
+      - "9117:9117"
+    restart: unless-stopped
