@@ -31,8 +31,13 @@ namespace Jackett.Common.Indexers.Definitions
         // Toloka returns up to 50 rows per page; we page by item offset to stay correct even if that ever changes.
         private const int ResultsPerPage = 50;
 
-        // Hard cap on how many releases we enrich with a details-page request, to keep searches responsive.
-        private const int MaxEnhancedMetadataRequests = 30;
+        // Hard cap on how many releases we enrich with a details-page request, to keep searches responsive and avoid
+        // tripping Toloka's rate limit (each enrichment is one extra, throttled request).
+        private const int MaxEnhancedMetadataRequests = 10;
+
+        // Minimum spacing between the sequential details-page requests an enrichment pass makes, so a search does not
+        // hammer Toloka (which rate-limits aggressively and returns 429). Matches the ~2s/request the site tolerates.
+        private static readonly TimeSpan EnhancedMetadataRequestDelay = TimeSpan.FromSeconds(2);
 
         private new ConfigurationDataToloka configData
         {
@@ -210,14 +215,19 @@ namespace Jackett.Common.Indexers.Definitions
             caps.Categories.AddCategoryMapping(236, TorznabCatType.Other, "Закритий розділ");
             // Archive: still-valid releases relocated here, usually because a newer version superseded them elsewhere.
             caps.Categories.AddCategoryMapping(71, TorznabCatType.Other, "Архіви");
-            caps.Categories.AddCategoryMapping(72, TorznabCatType.Other, "Архів відео");
+            // Archived video is a mix of movies and TV; map to BOTH so the title reconstruction runs (it is gated on
+            // a TV/Movies category) and both Sonarr and Radarr can discover it (same dual-mapping as forum 137).
+            caps.Categories.AddCategoryMapping(72, TorznabCatType.Movies, "Архів відео");
+            caps.Categories.AddCategoryMapping(72, TorznabCatType.TV, "Архів відео");
             caps.Categories.AddCategoryMapping(73, TorznabCatType.Other, "Архів музики");
             caps.Categories.AddCategoryMapping(74, TorznabCatType.Other, "Архів програм");
             caps.Categories.AddCategoryMapping(75, TorznabCatType.Other, "Архів ігор");
             caps.Categories.AddCategoryMapping(76, TorznabCatType.Other, "Архів літератури");
             // Unformatted: flagged for a description/formatting violation (often just a missing poster); the file itself may be fine.
             caps.Categories.AddCategoryMapping(121, TorznabCatType.Other, "Неоформлені");
-            caps.Categories.AddCategoryMapping(45, TorznabCatType.Other, "Неоформлене відео");
+            // Unformatted video is also a movie/TV mix - map to BOTH so reconstruction runs (mirrors forum 72).
+            caps.Categories.AddCategoryMapping(45, TorznabCatType.Movies, "Неоформлене відео");
+            caps.Categories.AddCategoryMapping(45, TorznabCatType.TV, "Неоформлене відео");
             caps.Categories.AddCategoryMapping(46, TorznabCatType.Other, "Неоформлена музика");
             caps.Categories.AddCategoryMapping(47, TorznabCatType.Other, "Неоформлене програмне забезпечення");
             caps.Categories.AddCategoryMapping(48, TorznabCatType.Other, "Неоформлені ігри");
@@ -318,12 +328,90 @@ namespace Jackett.Common.Indexers.Definitions
                 }
             }
 
+            // Merge the completed/grabs count from the JSON api.php search (the HTML search page shows "?" for it).
+            // Only on an actual search term (the api needs one) and once per query - cheap (a single extra request).
+            if (configData.FetchGrabs.Value && !string.IsNullOrWhiteSpace(query.SanitizedSearchTerm) && releases.Count > 0)
+            {
+                await MergeGrabsAsync(releases, query.SanitizedSearchTerm);
+            }
+
             if (configData.EnhancedMetadata.Value)
             {
                 await EnrichReleasesAsync(releases);
             }
 
             return releases;
+        }
+
+        // api.php returns up to ~30 JSON search hits that DO include the completed/grabs count the HTML search page
+        // hides (it shows "?"). One extra request per search merges that count into the matching releases by topic id.
+        private async Task MergeGrabsAsync(List<ReleaseInfo> releases, string searchTerm)
+        {
+            try
+            {
+                var apiUrl = SiteLink + "api.php?" + new List<KeyValuePair<string, string>>
+                {
+                    { "search", searchTerm }
+                }.GetQueryString();
+
+                var response = await RequestWithCookiesAsync(apiUrl);
+                var grabs = ParseGrabCounts(response.ContentString);
+                if (grabs.Count == 0)
+                {
+                    return;
+                }
+
+                foreach (var release in releases)
+                {
+                    var id = ExtractTopicId(release.Details);
+                    if (id != null && grabs.TryGetValue(id, out var count))
+                    {
+                        release.Grabs = count;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Debug($"{Id}: Failed to fetch download counts from api.php: {ex.Message}");
+            }
+        }
+
+        // Parses the api.php JSON array into a topic-id -> completed(grabs) map. Tolerant of an empty/non-array body
+        // (the api returns plain text on error), so a bad response simply yields no counts rather than throwing.
+        public static Dictionary<string, long> ParseGrabCounts(string json)
+        {
+            var map = new Dictionary<string, long>();
+            if (string.IsNullOrWhiteSpace(json) || !json.TrimStart().StartsWith("["))
+            {
+                return map;
+            }
+
+            foreach (var item in JArray.Parse(json))
+            {
+                var id = item.Value<string>("id");
+                var complete = item.Value<string>("complete");
+                if (!string.IsNullOrWhiteSpace(id) && long.TryParse(complete, out var count))
+                {
+                    map[id] = count;
+                }
+            }
+
+            return map;
+        }
+
+        private static readonly Regex _topicIdRegex = new Regex(@"/t(\d+)", RegexOptions.Compiled);
+
+        // Extracts the numeric topic id from a details URL ("https://toloka.to/t695553" -> "695553") so it can be
+        // matched against the api.php "id" field.
+        private static string ExtractTopicId(Uri details)
+        {
+            if (details == null)
+            {
+                return null;
+            }
+
+            var m = _topicIdRegex.Match(details.AbsoluteUri);
+            return m.Success ? m.Groups[1].Value : null;
         }
 
         private string BuildSearchUrl(TorznabQuery query, ICollection<string> categories, int offset)
@@ -339,24 +427,6 @@ namespace Jackett.Common.Indexers.Definitions
             if (configData.FreeleechOnly.Value)
             {
                 qc.Add("sds", "1");
-            }
-
-            var uploader = configData.SearchByUploader.Value?.Trim();
-            if (!string.IsNullOrWhiteSpace(uploader))
-            {
-                // Toloka's "Автор" search field is "pn" (poster NAME = username, what users actually know). The
-                // legacy numeric poster id is "pid" (the value behind an uploader-name link). A purely numeric value
-                // is treated as a pid for backward compatibility; anything else is a username. Homoglyph-normalize
-                // the username so a handle with Cyrillic look-alikes hidden among Latin letters (e.g. "wаrden", the
-                // 'а' is Cyrillic) still matches the real account — same treatment titles get.
-                if (uploader.All(char.IsDigit))
-                {
-                    qc.Add("pid", uploader);
-                }
-                else
-                {
-                    qc.Add("pn", TitleParser.NormalizeNameHomoglyphs(uploader));
-                }
             }
 
             if (string.IsNullOrWhiteSpace(searchString))
@@ -470,7 +540,7 @@ namespace Jackett.Common.Indexers.Definitions
                 Guid = details,
                 Details = details,
                 Link = configData.UseMagnetLinks.Value ? details : link,
-                Title = _titleParser.Parse(title, category, configData.StripCyrillicLetters.Value, releaseGroup, ukrainianAudioDefault, configData.PreserveExactRanges.Value),
+                Title = _titleParser.Parse(title, category, configData.StripCyrillicLetters.Value, releaseGroup, ukrainianAudioDefault, configData.PreserveExactRanges.Value, configData.NormalizeQuality.Value),
                 Description = title,
                 Category = category,
                 Size = ParseUtil.GetBytes(row.QuerySelector("td:nth-child(7)")?.TextContent),
@@ -514,6 +584,12 @@ namespace Jackett.Common.Indexers.Definitions
                     break;
                 }
 
+                // Space the sequential detail requests out so a single search doesn't hammer Toloka into a 429.
+                if (enriched > 0)
+                {
+                    await Task.Delay(EnhancedMetadataRequestDelay);
+                }
+
                 enriched++;
 
                 try
@@ -541,6 +617,12 @@ namespace Jackett.Common.Indexers.Definitions
                         release.Title = InjectResolution(release.Title, meta.Resolution);
                     }
 
+                    // File count is only available on the details page (the search rows don't carry it).
+                    if (meta.FileCount is > 0)
+                    {
+                        release.Files = meta.FileCount;
+                    }
+
                     if (configData.UseMagnetLinks.Value && meta.MagnetUri != null)
                     {
                         release.MagnetUri = meta.MagnetUri;
@@ -549,7 +631,8 @@ namespace Jackett.Common.Indexers.Definitions
                 }
                 catch (Exception ex)
                 {
-                    logger.Warn($"{Id}: Failed to fetch enhanced metadata for {release.Details}: {ex.Message}");
+                    // Optional metadata - a failure (often a transient 429) must not spam the log or fail the search.
+                    logger.Debug($"{Id}: Failed to fetch enhanced metadata for {release.Details}: {ex.Message}");
                 }
             }
         }
@@ -629,6 +712,15 @@ namespace Jackett.Common.Indexers.Definitions
             // Recover a resolution from the MediaInfo frame-size line ("розмір кадру: 1024 х 576").
             meta.Resolution = ResolutionFromFrameSize(doc.Body?.TextContent);
 
+            // File count from the download file list ("Список файлів завантаження"): the btTbl table has a single
+            // row6 header plus one row4 per file, so the number of row4 rows is the file count. (The search-results
+            // page carries no file count, so this is the only place it can be recovered.)
+            var fileRows = doc.QuerySelector("table.btTbl")?.QuerySelectorAll("tr.row4").Length ?? 0;
+            if (fileRows > 0)
+            {
+                meta.FileCount = fileRows;
+            }
+
             return meta;
         }
 
@@ -670,6 +762,7 @@ namespace Jackett.Common.Indexers.Definitions
             public Uri Poster { get; set; }
             public string DownloadLink { get; set; }
             public string Resolution { get; set; }
+            public long? FileCount { get; set; }
         }
 
         // Frame size reported in the details-page MediaInfo block, e.g. "розмір кадру: 1024 х 576" (Cyrillic х or
@@ -862,7 +955,7 @@ namespace Jackett.Common.Indexers.Definitions
                 RegexOptions.Compiled | RegexOptions.IgnoreCase);
             // Single season + episode RANGE (keyword or "of M" AFTER the range) -> SxxEaa-Ebb.
             private static readonly Regex _seasonEpisodeRangeAfterRegex = new Regex(
-                @"(?:Сезон\w*|Seasons?)\s*[:]*\s*(\d+)\s*[,;]\s*(\d+)\s*-\s*(\d+)\s*(?:" + _epKeyword + @"\b|(?:з|із|of)\s*\d+)",
+                @"(?:Сезон\w*|Seasons?)\s*[:]*\s*(\d+)\s*[,;]\s*(\d+)\s*-\s*(\d+)\s*(?:" + _epKeyword + @"\b|(?:з|із|of)\s*" + _ofTotal + @")",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase);
             // Single season + episode RANGE (keyword BEFORE the range, e.g. "Сезон 2, серії 1-10" or, with no
             // comma, "Сезон 1 серії 1-12" / "Сезон 1 Випуск 1-5") -> SxxEaa-Ebb. The comma is optional; the episode
@@ -919,7 +1012,7 @@ namespace Jackett.Common.Indexers.Definitions
             // Count form: "Серій N з M" / "Episodes N of M" / "Серій: N/M" means N episodes (of M total) are
             // present, NOT "episode N". Single number only (a range like "1-24 з 27" is handled elsewhere). The
             // non-prefixed "E01-N" output is what the standalone-episode token recognizer expects.
-            private static readonly Regex _tvTitleEpisodeCountRegex = new Regex(@"\b(?:сері[йіяї]+|епізод\w*|випуск\w*|episodes?)\s*[:]*\s*(\d+)\s*(?:з|із|of|/)\s*\d+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            private static readonly Regex _tvTitleEpisodeCountRegex = new Regex(@"\b(?:сері[йіяї]+|епізод\w*|випуск\w*|episodes?)\s*[:]*\s*(\d+)\s*(?:з|із|of|/)\s*(?:\d+|[XxХх]{2,}|\?{2,})", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             private static readonly Regex _digitsRegex = new Regex(@"\d{1,4}", RegexOptions.Compiled);
 
             // Closed set of audio/subtitle language tokens used on Toloka (shared by the language detector and the
@@ -967,7 +1060,7 @@ namespace Jackett.Common.Indexers.Definitions
                 ['С'] = 'C', ['Т'] = 'T', ['У'] = 'Y', ['Х'] = 'X', ['І'] = 'I', ['Ј'] = 'J', ['Ѕ'] = 'S'
             };
 
-            public string Parse(string title, ICollection<int> category, bool stripCyrillicLetters = true, string releaseGroup = null, bool? ukrainianAudioDefault = null, bool exactRanges = false)
+            public string Parse(string title, ICollection<int> category, bool stripCyrillicLetters = true, string releaseGroup = null, bool? ukrainianAudioDefault = null, bool exactRanges = false, bool normalizeQuality = true)
             {
                 // Drop invisible/format characters (zero-width, BOM, bidi marks, Unicode tag chars) that some
                 // uploaders sneak into tokens - they split a source like "W{tag}EBDLRip" so it is no longer
@@ -1154,7 +1247,7 @@ namespace Jackett.Common.Indexers.Definitions
                 // verbatim, so normalizing there would just produce artefacts like a hyphenated "WEB-DL-x264".
                 if (isReconstructable)
                 {
-                    title = NormalizeSourceCodec(title);
+                    title = NormalizeSourceCodec(title, normalizeQuality);
                 }
 
                 // Reconstruct into the canonical scene shape Sonarr/Radarr expect:
@@ -1167,17 +1260,17 @@ namespace Jackett.Common.Indexers.Definitions
                 string rebuilt = null;
                 if (isReconstructable && stripCyrillicLetters)
                 {
-                    var stripped = NormalizeSourceCodec(_stripCyrillicRegex.Replace(title, string.Empty).Trim(' ', '-'));
+                    var stripped = NormalizeSourceCodec(_stripCyrillicRegex.Replace(title, string.Empty).Trim(' ', '-'), normalizeQuality);
 
                     // Prefer the stripped form only when a genuine Latin title survives the strip; otherwise rebuild
                     // from the Cyrillic-kept title. TryBuildCleanReleaseTitle itself rejects a junk name (returns
                     // false), so even a stripped form that slips past HasLatinTitle falls through to the Cyrillic-kept
                     // rebuild rather than emitting junk.
-                    if (HasLatinTitle(stripped) && TryBuildCleanReleaseTitle(stripped, isTv, out var fromStripped))
+                    if (HasLatinTitle(stripped) && TryBuildCleanReleaseTitle(stripped, isTv, normalizeQuality, out var fromStripped))
                     {
                         rebuilt = fromStripped;
                     }
-                    else if (TryBuildCleanReleaseTitle(title, isTv, out var fromCyrillic))
+                    else if (TryBuildCleanReleaseTitle(title, isTv, normalizeQuality, out var fromCyrillic))
                     {
                         rebuilt = fromCyrillic;
                     }
@@ -1939,16 +2032,22 @@ namespace Jackett.Common.Indexers.Definitions
             }
 
             // Normalizes source/codec spellings to the tokens Sonarr/Radarr parse, before the rebuild reads them.
-            private static string NormalizeSourceCodec(string title)
+            private static string NormalizeSourceCodec(string title, bool normalizeQuality)
             {
-                title = Regex.Replace(title, @"\b-Rip\b", "Rip", RegexOptions.IgnoreCase);
-                title = Regex.Replace(title, @"\bHDTVRip\b", "HDTV", RegexOptions.IgnoreCase);
-                // "WEB-DLRip"/"WEBDLRip" is a re-encode of a WEB-DL (MediaInfo-confirmed) -> WEBRip, the bucket
-                // Sonarr/Radarr actually parse it into (the raw "WEB-DLRip" token parses as nothing).
-                title = Regex.Replace(title, @"\bWEB-?DLRip\b", "WEBRip", RegexOptions.IgnoreCase);
-                title = Regex.Replace(title, @"\bWEBDL\b", "WEB-DL", RegexOptions.IgnoreCase);
+                // Source-name normalization is what the NormalizeQuality toggle controls; skip it when the user wants
+                // Toloka's original source tokens kept.
+                if (normalizeQuality)
+                {
+                    title = Regex.Replace(title, @"\b-Rip\b", "Rip", RegexOptions.IgnoreCase);
+                    title = Regex.Replace(title, @"\bHDTVRip\b", "HDTV", RegexOptions.IgnoreCase);
+                    // "WEB-DLRip"/"WEBDLRip" is a re-encode of a WEB-DL (MediaInfo-confirmed) -> WEBRip, the bucket
+                    // Sonarr/Radarr actually parse it into (the raw "WEB-DLRip" token parses as nothing).
+                    title = Regex.Replace(title, @"\bWEB-?DLRip\b", "WEBRip", RegexOptions.IgnoreCase);
+                    title = Regex.Replace(title, @"\bWEBDL\b", "WEB-DL", RegexOptions.IgnoreCase);
+                }
 
                 // Normalize codecs so Sonarr/Radarr recognise them (and don't mistake "AVC" for the release group).
+                // Always applied - this is codec parsing, not the source-name normalization the toggle controls.
                 title = _codecAvcRegex.Replace(title, "x264");
                 title = _codecHevcRegex.Replace(title, "x265");
 
@@ -2022,7 +2121,7 @@ namespace Jackett.Common.Indexers.Definitions
             // before it as the series title), language/subtitle clutter is dropped, and only a single
             // Latin title is kept. A yearless release anchors on the first source/resolution token instead.
             // Returns false when there is neither a year nor a source token to anchor on (caller falls back).
-            private static bool TryBuildCleanReleaseTitle(string title, bool isTv, out string result)
+            private static bool TryBuildCleanReleaseTitle(string title, bool isTv, bool normalizeQuality, out string result)
             {
                 result = null;
 
@@ -2118,7 +2217,7 @@ namespace Jackett.Common.Indexers.Definitions
 
                 // Quality comes from the tail (after the year), plus any unambiguous source token misplaced in the
                 // head/name before the year ("...India Special SatRip (2011)" -> source HDTV recovered).
-                var quality = ExtractQuality(head, tail);
+                var quality = ExtractQuality(head, tail, normalizeQuality);
 
                 var sb = new System.Text.StringBuilder(series);
                 if (isTv && !string.IsNullOrEmpty(seToken))
@@ -2301,7 +2400,7 @@ namespace Jackett.Common.Indexers.Definitions
                 return count;
             }
 
-            private static string ExtractQuality(string head, string tail)
+            private static string ExtractQuality(string head, string tail, bool normalizeQuality)
             {
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var tokens = new List<string>();
@@ -2311,7 +2410,7 @@ namespace Jackett.Common.Indexers.Definitions
                 // "Remux") is never mistaken for a quality token.
                 foreach (Match m in _sourceAnchorRegex.Matches(head))
                 {
-                    var token = NormalizeQualityToken(m.Value);
+                    var token = NormalizeQualityToken(m.Value, normalizeQuality);
                     if (seen.Add(token))
                     {
                         tokens.Add(token);
@@ -2320,7 +2419,7 @@ namespace Jackett.Common.Indexers.Definitions
 
                 foreach (Match m in _qualityTokenRegex.Matches(tail))
                 {
-                    var token = NormalizeQualityToken(m.Value);
+                    var token = NormalizeQualityToken(m.Value, normalizeQuality);
                     if (seen.Add(token))
                     {
                         tokens.Add(token);
@@ -2346,17 +2445,61 @@ namespace Jackett.Common.Indexers.Definitions
             // custom/non-standard source names; the targets are verified against the live Sonarr+Radarr QualityParser
             // regexes (see for_testing/format_lang_standardization). A source word only sets the bucket when a
             // resolution token sits beside it, so these never invent a resolution.
-            private static string NormalizeQualityToken(string token)
+            private static string NormalizeQualityToken(string token, bool normalizeQuality)
             {
                 // Fold spacing/hyphens so "BD Rip", "BDRip" and "WEB-DL" share one switch key.
                 var key = token.ToUpperInvariant().Replace(" ", string.Empty).Replace("-", string.Empty);
+
+                // Resolution, codec and HDR/colour tags are ALWAYS normalized - these are not the "source quality"
+                // names the NormalizeQuality toggle controls, and Sonarr/Radarr depend on them (e.g. reading a bare
+                // "AVC" as a release group, or "4K" failing to parse as 2160p).
                 switch (key)
                 {
                     case "4K":
                         return "2160p";
                     case "2K":
                         return "1440p";
+                    case "3D":
+                        return "3D";
+                    case "X264":
+                        return "x264";
+                    case "X265":
+                        return "x265";
 
+                    // HDR/colour markers (inert for the base quality, used by *arr custom formats) - normalize+preserve.
+                    case "DV":
+                    case "DOVI":
+                    case "DOLBYVISION":
+                        return "DV";
+                    case "HDR10+":
+                        return "HDR10+";
+                    case "HDR10":
+                        return "HDR10";
+                    case "HDR":
+                        return "HDR";
+                    case "HLG":
+                        return "HLG";
+                    case "SDR":
+                        return "SDR";
+                }
+
+                if (Regex.IsMatch(token, @"^\d+[pi]$", RegexOptions.IgnoreCase))
+                {
+                    return token.ToLowerInvariant();
+                }
+
+                // Source-name normalization maps Toloka's many custom source names to the canonical token
+                // Sonarr/Radarr actually parse (verified against the live Sonarr+Radarr QualityParser regexes, see
+                // for_testing/format_lang_standardization). A source word only sets the bucket when a resolution token
+                // sits beside it, so these never invent a resolution. Skipped when the user opts to keep Toloka's
+                // original tokens (e.g. "BDRemux"/"BDRip" left verbatim).
+                if (!normalizeQuality)
+                {
+                    return token;
+                }
+
+                switch (key)
+                {
                     // Blu-ray family -> the one-word "BluRay" (Sonarr does NOT parse spaced "Blu Ray"); a rip/encode
                     // shares the Bluray bucket with a full disc.
                     case "BLURAY":
@@ -2420,37 +2563,8 @@ namespace Jackett.Common.Indexers.Definitions
                     case "DVDREMUX":
                         return "DVD Remux";
 
-                    case "3D":
-                        return "3D";
-
                     case "CAMRIP":
                         return "CAM";
-
-                    case "X264":
-                        return "x264";
-                    case "X265":
-                        return "x265";
-
-                    // HDR/colour markers (inert for the base quality, used by *arr custom formats) - normalize+preserve.
-                    case "DV":
-                    case "DOVI":
-                    case "DOLBYVISION":
-                        return "DV";
-                    case "HDR10+":
-                        return "HDR10+";
-                    case "HDR10":
-                        return "HDR10";
-                    case "HDR":
-                        return "HDR";
-                    case "HLG":
-                        return "HLG";
-                    case "SDR":
-                        return "SDR";
-                }
-
-                if (Regex.IsMatch(token, @"^\d+[pi]$", RegexOptions.IgnoreCase))
-                {
-                    return token.ToLowerInvariant();
                 }
 
                 // Multi-disc DVD descriptors ("16xDVD9", "DVD9+DVD5") -> the DVD source bucket.
@@ -2478,9 +2592,11 @@ namespace Jackett.Common.Indexers.Definitions
                 }
 
                 author = author.Trim();
+                // An anonymous upload still gets an explicit "-Anonymous" group (rather than no group at all) so the
+                // release title carries a consistent, parseable group token. Both the Latin and Cyrillic markers map to it.
                 if (author.Equals("Anonymous", StringComparison.OrdinalIgnoreCase) || author.Equals("Анонім", StringComparison.OrdinalIgnoreCase))
                 {
-                    return null;
+                    return "Anonymous";
                 }
 
                 // Fix Cyrillic homoglyphs hidden in an otherwise-Latin handle first (e.g. "Аlех" -> "Alex"), so the
@@ -2504,8 +2620,10 @@ namespace Jackett.Common.Indexers.Definitions
                     // anything else (other scripts, exotic punctuation) is dropped
                 }
 
-                // Collapse any double spaces introduced by dropped characters and trim edge whitespace.
-                var result = Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
+                // A release-group token must not contain spaces - Sonarr/Radarr read everything after the final "-" in
+                // the title as the group, so a space would truncate it. Collapse internal whitespace (from a multi-word
+                // handle like "Ukr Voice Team", or a transliterated Cyrillic name) to an underscore: "Ukr_Voice_Team".
+                var result = Regex.Replace(sb.ToString().Trim(), @"\s+", "_");
                 return result.Length >= 2 && result.Any(char.IsLetterOrDigit) ? result : null;
             }
 

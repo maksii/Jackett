@@ -18,17 +18,22 @@ namespace Jackett.Test.Common.Indexers.Toloka
         }
 
         [TestCase("FanVoxUA", ExpectedResult = "FanVoxUA")]
-        [TestCase("Сталь Кується", ExpectedResult = "Stal Kuietsia")]
-        [TestCase("Anonymous", ExpectedResult = null)]
+        // A transliterated multi-word Cyrillic name is also underscore-joined (no spaces in a release group).
+        [TestCase("Сталь Кується", ExpectedResult = "Stal_Kuietsia")]
+        // Anonymous uploads still get an explicit "Anonymous" group (both the Latin and Cyrillic markers).
+        [TestCase("Anonymous", ExpectedResult = "Anonymous")]
+        [TestCase("Анонім", ExpectedResult = "Anonymous")]
         [TestCase("", ExpectedResult = null)]
         [TestCase("   ", ExpectedResult = null)]
-        [TestCase("UkrDub Team", ExpectedResult = "UkrDub Team")]
-        // ASCII handles keep their separators/case verbatim so they match the community custom formats.
+        // A multi-word handle has its spaces replaced with underscores (a release group token cannot contain spaces).
+        [TestCase("UkrDub Team", ExpectedResult = "UkrDub_Team")]
+        [TestCase("Ukr Voice Team", ExpectedResult = "Ukr_Voice_Team")]
+        [TestCase("Marco Polo", ExpectedResult = "Marco_Polo")]
+        // ASCII handles keep their non-space separators/case verbatim so they match the community custom formats.
         [TestCase("HaKer_256", ExpectedResult = "HaKer_256")]
         [TestCase("Romario_O", ExpectedResult = "Romario_O")]
         [TestCase("Seto.Haruki", ExpectedResult = "Seto.Haruki")]
         [TestCase("Otaku-First", ExpectedResult = "Otaku-First")]
-        [TestCase("Marco Polo", ExpectedResult = "Marco Polo")]
         [TestCase("Gwean_&_Maslinka", ExpectedResult = "Gwean_&_Maslinka")]
         // Latin handles with hidden Cyrillic homoglyphs: look-alike-normalized, NOT phonetically transliterated
         // ("х" would otherwise become "kh" -> "Alekh"; "а" stays "a").
@@ -203,6 +208,50 @@ namespace Jackett.Test.Common.Indexers.Toloka
         }
 
         [Test]
+        public void TestNormalizeQualityOnNormalizesSourceTokens()
+        {
+            var parser = new TolokaIndexer.TitleParser();
+
+            // Default (toggle on): Toloka's "BDRemux" is mapped to the canonical "BluRay Remux" tier.
+            var result = parser.Parse(
+                "Дюна / Dune (2021) BDRemux 1080p H.264 Ukr/Eng | Sub Ukr",
+                new List<int> { TorznabCatType.Movies.ID },
+                true, null, null, exactRanges: false, normalizeQuality: true);
+
+            Assert.That(result, Is.EqualTo("Dune (2021) BluRay Remux 1080p x264 Ukrainian"));
+        }
+
+        [Test]
+        public void TestNormalizeQualityOffKeepsOriginalSourceTokens()
+        {
+            var parser = new TolokaIndexer.TitleParser();
+
+            // Toggle off: keep Toloka's original source token ("BDRemux"); resolution + codec are still normalized.
+            var result = parser.Parse(
+                "Дюна / Dune (2021) BDRemux 1080p H.264 Ukr/Eng | Sub Ukr",
+                new List<int> { TorznabCatType.Movies.ID },
+                true, null, null, exactRanges: false, normalizeQuality: false);
+
+            Assert.That(result, Is.EqualTo("Dune (2021) BDRemux 1080p x264 Ukrainian"));
+        }
+
+        [Test]
+        public void TestArchiveVideoMixedCategoryReconstructsTvSeason()
+        {
+            var parser = new TolokaIndexer.TitleParser();
+
+            // Archive video (forum 72) and unformatted video (45) map to BOTH Movies and TV. A TV title in that mix
+            // must still be reconstructed with its season token (it would be passed through verbatim under "Other").
+            var result = parser.Parse(
+                "Дім Давида (Сезон 2) / House of David (Season 2) WEB-DL 1080p Ukr/Eng",
+                new List<int> { TorznabCatType.Movies.ID, TorznabCatType.TV.ID },
+                true);
+
+            Assert.That(result, Does.StartWith("House of David S02"));
+            Assert.That(result, Does.Contain("WEB-DL 1080p"));
+        }
+
+        [Test]
         public void TestParseDetailsPage()
         {
             const string html = @"
@@ -252,6 +301,28 @@ namespace Jackett.Test.Common.Indexers.Toloka
             Assert.That(meta.InfoHash, Is.Null);
             Assert.That(meta.MagnetUri, Is.Null);
             Assert.That(meta.Poster, Is.Null);
+        }
+
+        [Test]
+        public void TestParseGrabCountsFromApiJson()
+        {
+            // The api.php search returns the completed/grabs count the HTML page hides ("complete").
+            const string json = @"[
+  { ""id"": ""695553"", ""title"": ""Slime S4"", ""seeders"": ""22"", ""complete"": ""117"" },
+  { ""id"": ""678039"", ""title"": ""Slime S3"", ""seeders"": ""20"", ""complete"": ""1245"" }
+]";
+            var grabs = TolokaIndexer.ParseGrabCounts(json);
+
+            Assert.That(grabs["695553"], Is.EqualTo(117));
+            Assert.That(grabs["678039"], Is.EqualTo(1245));
+        }
+
+        [Test]
+        public void TestParseGrabCountsTolerantOfNonJsonBody()
+        {
+            // The api returns plain text on error/empty - must yield no counts rather than throw.
+            Assert.That(TolokaIndexer.ParseGrabCounts(""), Is.Empty);
+            Assert.That(TolokaIndexer.ParseGrabCounts("Nothing found"), Is.Empty);
         }
     }
 
@@ -484,6 +555,12 @@ namespace Jackett.Test.Common.Indexers.Toloka
                 // "(Mini Series)" -> S01; "+ОВА" -> OVA tag.
                 yield return new TestCaseData("Острів скарбів / Treasure Island (Mini Series) (2012) BDRemux 1080p Ukr/Eng | Sub Ukr", new List<int> { TorznabCatType.TV.ID }, true).Returns("Treasure Island S01 (2012) BluRay Remux 1080p Ukrainian");
                 yield return new TestCaseData("Поневіряння мага Орфена / Majutsushi Orphen Hagure Tabi (сезон 1+ОВА) (2020) WEBDL 720p", new List<int> { TorznabCatType.TVAnime.ID }, true).Returns("Majutsushi Orphen Hagure Tabi S01 (2020) WEB-DL 720p OVA");
+
+                // --- Episode-count "of XX / ???" unknown-total placeholder round ---
+                // "Сезон 4, серії 11 з ХХ" = season 4, 11 of XX episodes available (a count) -> S04E01-E11, NOT S04E11.
+                yield return new TestCaseData("Моє переродження в Слиз (Сезон 4, серії 11 з ХХ) / Tensei shitara Slime Datta Ken (Season 4) (2026) WEBDLRip 1080p H.265 Ukr/Jap | sub Ukr", new List<int> { TorznabCatType.TVAnime.ID }, true).Returns("Tensei shitara Slime Datta Ken S04E01-E11 (2026) WEBRip 1080p x265 Ukrainian");
+                // "Сезон 4, 1-11 з ???" = season 4, episodes 1-11 of unknown total -> S04E01-E11, NOT a season-list S01-S11.
+                yield return new TestCaseData("Про моє переродження в слиз (Сезон 4, 1-11 з ???) / Tensei shitara Slime Datta Ken (Season 4) (2026) WEBDLRip 1080p H.264", new List<int> { TorznabCatType.TVAnime.ID }, true).Returns("Tensei shitara Slime Datta Ken S04E01-E11 (2026) WEBRip 1080p x264");
             }
         }
     }

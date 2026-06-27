@@ -12,7 +12,8 @@ namespace Jackett.Common.Models.IndexerConfig.Bespoke
         public BoolConfigurationItem AppendReleaseGroup { get; private set; }
         public BoolConfigurationItem UseMagnetLinks { get; private set; }
         public BoolConfigurationItem EnhancedMetadata { get; private set; }
-        public StringConfigurationItem SearchByUploader { get; private set; }
+        public BoolConfigurationItem FetchGrabs { get; private set; }
+        public BoolConfigurationItem NormalizeQuality { get; private set; }
         public SingleSelectConfigurationItem MaxPages { get; private set; }
         public DisplayInfoConfigurationItem PerformanceInfo { get; private set; }
 
@@ -23,8 +24,9 @@ namespace Jackett.Common.Models.IndexerConfig.Bespoke
             PreserveExactRanges = new BoolConfigurationItem("Show exact episode/season ranges for disjoint packs (e.g. E01-E02, E05-E12) instead of a single envelope range (E01-E12). More truthful for the user; Sonarr still treats it as the first-to-last span.") { Value = false };
             AppendReleaseGroup = new BoolConfigurationItem("Append uploader as release group (e.g. ...WEB-DL-FanVoxUA, improves Sonarr/Radarr matching)") { Value = true };
             UseMagnetLinks = new BoolConfigurationItem("Use magnet links (fetches the details page on download)") { Value = false };
-            EnhancedMetadata = new BoolConfigurationItem("Fetch enhanced metadata (IMDb, poster, exact size) - slower, one extra request per result") { Value = false };
-            SearchByUploader = new StringConfigurationItem("Search only releases from this uploader (optional). Enter the uploader's username (e.g. fanat22012); a numeric uploader id (e.g. 889220) is also accepted.") { Value = "" };
+            EnhancedMetadata = new BoolConfigurationItem("Fetch enhanced metadata from each release's details page (IMDb id, poster, recovered resolution, file count) - slower: one extra rate-limited request per result, capped at the first 10") { Value = false };
+            FetchGrabs = new BoolConfigurationItem("Fetch download counts (grabs) via one extra api.php request per search - Toloka's HTML search page hides the completed count (the api covers the first ~30 results of a search)") { Value = true };
+            NormalizeQuality = new BoolConfigurationItem("Normalize source/quality names to the tokens Sonarr/Radarr parse (e.g. BDRemux -> BluRay Remux, BDRip -> BluRay). Disable to keep Toloka's original quality tokens.") { Value = true };
             MaxPages = new SingleSelectConfigurationItem(
                 "Maximum number of result pages to fetch",
                 new Dictionary<string, string>
