@@ -18,14 +18,25 @@
 # When you rebase onto a newer upstream Jackett, bump BASE_TAG to the matching
 # LinuxServer tag (https://hub.docker.com/r/linuxserver/jackett/tags).
 ARG BASE_TAG=0.24.2125
+# Assembly identity the rest of the image expects. Jackett.Server binds to
+# Jackett.Common by EXACT version, so this MUST equal the upstream build version
+# (= the numeric part of BASE_TAG). Bump it together with BASE_TAG.
+ARG JACKETT_VERSION=0.24.2125
 
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+ARG JACKETT_VERSION
 WORKDIR /src
 COPY . .
 # Build only the changed assembly. -f net9.0 skips the net471/Mono TFM (Windows-only).
+# Pin the version so the rebuilt Jackett.Common.dll has the same assembly identity
+# (e.g. 0.24.2125.0) that Jackett.Server references — otherwise the load fails.
 RUN dotnet build src/Jackett.Common/Jackett.Common.csproj \
         -c Release \
         -f net9.0 \
+        -p:Version=${JACKETT_VERSION} \
+        -p:AssemblyVersion=${JACKETT_VERSION}.0 \
+        -p:FileVersion=${JACKETT_VERSION}.0 \
+        -p:InformationalVersion=${JACKETT_VERSION} \
         -p:TreatWarningsAsErrors=false \
         -o /out
 
