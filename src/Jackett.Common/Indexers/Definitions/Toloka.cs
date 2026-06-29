@@ -92,25 +92,27 @@ namespace Jackett.Common.Indexers.Definitions
             caps.Categories.AddCategoryMapping(117, TorznabCatType.Movies, "Українське кіно");
             caps.Categories.AddCategoryMapping(84, TorznabCatType.Movies, "|-Мультфільми і казки");
             caps.Categories.AddCategoryMapping(42, TorznabCatType.Movies, "|-Художні фільми");
-            caps.Categories.AddCategoryMapping(124, TorznabCatType.TV, "|-Телесеріали");
-            caps.Categories.AddCategoryMapping(125, TorznabCatType.TV, "|-Мультсеріали");
+            caps.Categories.AddCategoryMapping(124, TorznabCatType.TVHD, "|-Телесеріали"); // TV leaf (not bare TV): default Sonarr requests {TV/SD,TV/HD}, so a bare-TV release is filtered out
+            caps.Categories.AddCategoryMapping(125, TorznabCatType.TVHD, "|-Мультсеріали");
             caps.Categories.AddCategoryMapping(129, TorznabCatType.Movies, "|-АртХаус");
             caps.Categories.AddCategoryMapping(219, TorznabCatType.Movies, "|-Аматорське відео");
             caps.Categories.AddCategoryMapping(118, TorznabCatType.Movies, "Українське озвучення");
             caps.Categories.AddCategoryMapping(16, TorznabCatType.Movies, "|-Фільми");
-            caps.Categories.AddCategoryMapping(32, TorznabCatType.TV, "|-Телесеріали");
+            caps.Categories.AddCategoryMapping(32, TorznabCatType.TVHD, "|-Телесеріали");
             caps.Categories.AddCategoryMapping(19, TorznabCatType.Movies, "|-Мультфільми");
-            caps.Categories.AddCategoryMapping(44, TorznabCatType.TV, "|-Мультсеріали");
+            caps.Categories.AddCategoryMapping(44, TorznabCatType.TVHD, "|-Мультсеріали");
             caps.Categories.AddCategoryMapping(127, TorznabCatType.TVAnime, "|-Аніме");
+            caps.Categories.AddCategoryMapping(127, TorznabCatType.MoviesOther, "|-Аніме"); // dual-map: anime films reach Radarr (movie-search)
             caps.Categories.AddCategoryMapping(55, TorznabCatType.Movies, "|-АртХаус");
             caps.Categories.AddCategoryMapping(94, TorznabCatType.MoviesOther, "|-Трейлери");
             caps.Categories.AddCategoryMapping(144, TorznabCatType.Movies, "|-Короткометражні");
             caps.Categories.AddCategoryMapping(190, TorznabCatType.Movies, "Українські субтитри");
             caps.Categories.AddCategoryMapping(70, TorznabCatType.Movies, "|-Фільми");
-            caps.Categories.AddCategoryMapping(192, TorznabCatType.TV, "|-Телесеріали");
+            caps.Categories.AddCategoryMapping(192, TorznabCatType.TVHD, "|-Телесеріали");
             caps.Categories.AddCategoryMapping(193, TorznabCatType.Movies, "|-Мультфільми");
-            caps.Categories.AddCategoryMapping(195, TorznabCatType.TV, "|-Мультсеріали");
+            caps.Categories.AddCategoryMapping(195, TorznabCatType.TVHD, "|-Мультсеріали");
             caps.Categories.AddCategoryMapping(194, TorznabCatType.TVAnime, "|-Аніме");
+            caps.Categories.AddCategoryMapping(194, TorznabCatType.MoviesOther, "|-Аніме"); // dual-map: anime films reach Radarr (movie-search)
             caps.Categories.AddCategoryMapping(196, TorznabCatType.Movies, "|-АртХаус");
             caps.Categories.AddCategoryMapping(197, TorznabCatType.Movies, "|-Короткометражні");
             caps.Categories.AddCategoryMapping(225, TorznabCatType.TVDocumentary, "Документальні фільми українською");
@@ -145,8 +147,9 @@ namespace Jackett.Common.Indexers.Definitions
             caps.Categories.AddCategoryMapping(140, TorznabCatType.TVDocumentary, "|-Документальні фільми в HD");
             caps.Categories.AddCategoryMapping(120, TorznabCatType.MoviesDVD, "DVD українською");
             caps.Categories.AddCategoryMapping(66, TorznabCatType.MoviesDVD, "|-Художні фільми та серіали в DVD");
+            caps.Categories.AddCategoryMapping(66, TorznabCatType.TVSD, "|-Художні фільми та серіали в DVD"); // films AND series -> Sonarr sees the series (DVD = SD)
             caps.Categories.AddCategoryMapping(137, TorznabCatType.MoviesDVD, "|-Мультфільми та мультсеріали в DVD");
-            caps.Categories.AddCategoryMapping(137, TorznabCatType.TV, "|-Мультфільми та мультсеріали в DVD");
+            caps.Categories.AddCategoryMapping(137, TorznabCatType.TVSD, "|-Мультфільми та мультсеріали в DVD"); // DVD cartoon-series -> Sonarr (DVD = SD)
             caps.Categories.AddCategoryMapping(138, TorznabCatType.MoviesDVD, "|-Документальні фільми в DVD");
             caps.Categories.AddCategoryMapping(237, TorznabCatType.Movies, "Відео для мобільних (iOS, Android, Windows Phone)");
             caps.Categories.AddCategoryMapping(33, TorznabCatType.AudioVideo, "Звукові доріжки та субтитри");
@@ -218,7 +221,7 @@ namespace Jackett.Common.Indexers.Definitions
             // Archived video is a mix of movies and TV; map to BOTH so the title reconstruction runs (it is gated on
             // a TV/Movies category) and both Sonarr and Radarr can discover it (same dual-mapping as forum 137).
             caps.Categories.AddCategoryMapping(72, TorznabCatType.Movies, "Архів відео");
-            caps.Categories.AddCategoryMapping(72, TorznabCatType.TV, "Архів відео");
+            caps.Categories.AddCategoryMapping(72, TorznabCatType.TVHD, "Архів відео");
             caps.Categories.AddCategoryMapping(73, TorznabCatType.Other, "Архів музики");
             caps.Categories.AddCategoryMapping(74, TorznabCatType.Other, "Архів програм");
             caps.Categories.AddCategoryMapping(75, TorznabCatType.Other, "Архів ігор");
@@ -227,7 +230,7 @@ namespace Jackett.Common.Indexers.Definitions
             caps.Categories.AddCategoryMapping(121, TorznabCatType.Other, "Неоформлені");
             // Unformatted video is also a movie/TV mix - map to BOTH so reconstruction runs (mirrors forum 72).
             caps.Categories.AddCategoryMapping(45, TorznabCatType.Movies, "Неоформлене відео");
-            caps.Categories.AddCategoryMapping(45, TorznabCatType.TV, "Неоформлене відео");
+            caps.Categories.AddCategoryMapping(45, TorznabCatType.TVHD, "Неоформлене відео");
             caps.Categories.AddCategoryMapping(46, TorznabCatType.Other, "Неоформлена музика");
             caps.Categories.AddCategoryMapping(47, TorznabCatType.Other, "Неоформлене програмне забезпечення");
             caps.Categories.AddCategoryMapping(48, TorznabCatType.Other, "Неоформлені ігри");
